@@ -1,0 +1,11 @@
+node_modules
+.pnpm-store
+.turbo
+.DS_Store
+*.log
+
+# local data
+/data/**
+!data/.gitkeep
+
+packages/ingest/data

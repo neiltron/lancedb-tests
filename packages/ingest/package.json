@@ -1,0 +1,31 @@
+{
+  "name": "@lancedb/ingest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ingest": "./src/cli.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "lint": "echo 'todo'",
+    "format": "echo 'todo'"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@lancedb/lancedb": "^0.23.0",
+    "@lancedb/shared": "workspace:*",
+    "apache-arrow": "^18.1.0",
+    "commander": "^12.1.0",
+    "csv-parse": "^5.5.6",
+    "fs-extra": "^11.2.0",
+    "p-limit": "^5.0.0",
+    "sharp": "^0.33.4"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  }
+}

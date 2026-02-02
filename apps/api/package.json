@@ -1,0 +1,21 @@
+{
+  "name": "@lancedb/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --watch --loader ts-node/esm src/index.ts",
+    "lint": "echo 'todo'",
+    "format": "echo 'todo'"
+  },
+  "dependencies": {
+    "@lancedb/shared": "workspace:*",
+    "hono": "^4.5.2",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}
