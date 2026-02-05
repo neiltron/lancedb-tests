@@ -79,6 +79,18 @@ Example `metadata.jsonl` entry:
 pnpm --filter @lancedb/api dev
 ```
 
+### API environment variables
+
+```bash
+# Optional overrides
+export LANCEDB_DIR=/path/to/wikiart.lancedb
+export IMAGES_DIR=/path/to/images
+export MODEL_CACHE_DIR=/path/to/model-cache
+export HOST=127.0.0.1
+export PORT=8787
+export HF_REMOTE_HOST=https://huggingface.co/
+```
+
 ## Run Web
 
 ```bash
