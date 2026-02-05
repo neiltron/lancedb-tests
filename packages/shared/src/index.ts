@@ -1,4 +1,4 @@
-export type SearchMode = "clip" | "dino" | "hybrid";
+export type SearchMode = "clip" | "dino" | "hybrid" | "compare";
 
 export type SearchFilters = {
   artist?: string;
