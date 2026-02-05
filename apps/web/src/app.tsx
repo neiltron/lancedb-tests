@@ -31,7 +31,7 @@ function ResultCard({ r }: { r: SearchResult }) {
       <div className="meta">
         <div className="title">{r.artist}</div>
         <div className="tags">
-          {r.style} · {r.genre}
+          {r.style}
         </div>
         <div className="score">{r.score.toFixed(4)}</div>
       </div>

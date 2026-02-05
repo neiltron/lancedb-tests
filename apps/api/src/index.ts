@@ -453,7 +453,7 @@ app.post("/search", async (c) => {
       return { ...row, score };
     });
 
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => a.score - b.score);
     return c.json({ results: scored.slice(0, k), debug: payload });
   } catch (error) {
 	  console.log(error);
