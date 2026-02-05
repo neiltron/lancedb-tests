@@ -6,20 +6,28 @@ const API_BASE = "http://localhost:8787";
 function ResultCard({ r }: { r: SearchResult }) {
   const [imgError, setImgError] = useState(false);
   const thumbSrc = r.thumbUrl ? `${API_BASE}${r.thumbUrl}` : null;
+  const hasImage = thumbSrc && !imgError;
 
   return (
     <article className="card">
-      {thumbSrc && !imgError ? (
-        <img
-          className="thumb"
-          src={thumbSrc}
-          alt={`${r.artist} – ${r.style}`}
-          loading="lazy"
-          onError={() => setImgError(true)}
-        />
-      ) : (
-        <div className="thumb thumb-fallback" />
-      )}
+      <div className="thumb-wrap">
+        {hasImage ? (
+          <img
+            className="thumb"
+            src={thumbSrc}
+            alt={`${r.artist} – ${r.style}`}
+            loading="lazy"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <div className="thumb thumb-fallback" />
+        )}
+        {hasImage && (
+          <div className="thumb-popover">
+            <img src={`${API_BASE}/image/${r.id}`} alt={`${r.artist} – ${r.style}`} />
+          </div>
+        )}
+      </div>
       <div className="meta">
         <div className="title">{r.artist}</div>
         <div className="tags">

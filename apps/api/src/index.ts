@@ -313,6 +313,43 @@ app.get("/thumb/:id", async (c) => {
   }
 });
 
+app.get("/image/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const table = await getTable();
+    const filter = `id = '${escapeSqlString(id)}'`;
+    const rows = (await table
+      .query()
+      .where(filter)
+      .limit(1)
+      .select(["original_path"])
+      .toArray()) as Array<Record<string, unknown>>;
+
+    if (!rows.length) return c.json({ error: "not found" }, 404);
+
+    const imagesDir = getImagesDir();
+    const originalsDir = path.join(imagesDir, "original");
+    const originalPath = String(rows[0].original_path || "");
+    if (!originalPath) return c.json({ error: "not found" }, 404);
+
+    const originalFull = resolveUnder(originalsDir, originalPath);
+    if (!originalFull) return c.json({ error: "not found" }, 404);
+
+    const buffer = await fs.readFile(originalFull);
+    const ext = path.extname(originalPath).toLowerCase();
+    const mime =
+      ext === ".png" ? "image/png" :
+      ext === ".webp" ? "image/webp" :
+      "image/jpeg";
+    return c.body(buffer, 200, { "Content-Type": mime });
+  } catch (error) {
+    return c.json(
+      { error: "image_failed", detail: error instanceof Error ? error.message : String(error) },
+      500
+    );
+  }
+});
+
 app.post("/search", async (c) => {
   const form = await c.req.formData();
   const file = form.get("image");
