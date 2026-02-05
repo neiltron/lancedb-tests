@@ -10,9 +10,13 @@
     "format": "echo 'todo'"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@lancedb/lancedb": "^0.23.0",
     "@lancedb/shared": "workspace:*",
+    "@hono/node-server": "^1.12.2",
     "hono": "^4.5.2",
-    "multer": "^1.4.5-lts.1"
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.33.4"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",
