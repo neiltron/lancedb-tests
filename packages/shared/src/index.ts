@@ -18,7 +18,7 @@ export type SearchResult = {
   artist: string;
   style: string;
   genre: string;
-  thumbUrl: string;
+  originalUrl: string;
   score: number;
   debug?: {
     clipScore?: number;

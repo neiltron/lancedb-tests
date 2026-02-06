@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from "react";
 import type { SearchMode, SearchResult } from "@lancedb/shared";
 
-const API_BASE = "http://localhost:8787";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8787";
 
 function ResultCard({ r }: { r: SearchResult }) {
   const [imgError, setImgError] = useState(false);
-  const thumbSrc = r.thumbUrl ? `${API_BASE}${r.thumbUrl}` : null;
-  const hasImage = thumbSrc && !imgError;
+  const imgSrc = r.originalUrl.startsWith("http")
+    ? r.originalUrl
+    : `${API_BASE}${r.originalUrl}`;
+  const hasImage = !imgError;
 
   return (
     <article className="card">
@@ -14,7 +16,7 @@ function ResultCard({ r }: { r: SearchResult }) {
         {hasImage ? (
           <img
             className="thumb"
-            src={thumbSrc}
+            src={imgSrc}
             alt={`${r.artist} – ${r.style}`}
             loading="lazy"
             onError={() => setImgError(true)}
@@ -24,7 +26,7 @@ function ResultCard({ r }: { r: SearchResult }) {
         )}
         {hasImage && (
           <div className="thumb-popover">
-            <img src={`${API_BASE}/image/${r.id}`} alt={`${r.artist} – ${r.style}`} />
+            <img src={imgSrc} alt={`${r.artist} – ${r.style}`} />
           </div>
         )}
       </div>
