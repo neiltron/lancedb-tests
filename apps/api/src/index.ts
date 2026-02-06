@@ -178,12 +178,26 @@ let tablePromise: Promise<any> | null = null;
 let dbDirResolved: string | null = null;
 async function getTable() {
   if (!tablePromise) {
-    const dbDir = resolveRepoPath(process.env.LANCEDB_DIR || DEFAULT_DB_DIR);
-    dbDirResolved = dbDir;
-    tablePromise = (async () => {
-      const db = await lancedb.connect(dbDir);
-      return db.openTable("artworks");
-    })();
+    const uri = process.env.LANCEDB_URI;
+    if (uri) {
+      tablePromise = (async () => {
+        const opts = uri.startsWith("s3://") ? {
+          storageOptions: {
+            ...(process.env.S3_ENDPOINT && { endpoint: process.env.S3_ENDPOINT }),
+            region: process.env.S3_REGION || "auto",
+          }
+        } : undefined;
+        const db = await lancedb.connect(uri, opts);
+        return db.openTable("artworks");
+      })();
+    } else {
+      const dbDir = resolveRepoPath(process.env.LANCEDB_DIR || DEFAULT_DB_DIR);
+      dbDirResolved = dbDir;
+      tablePromise = (async () => {
+        const db = await lancedb.connect(dbDir);
+        return db.openTable("artworks");
+      })();
+    }
   }
   return tablePromise;
 }
@@ -237,12 +251,15 @@ async function vectorSearch({
     "_distance",
   ]);
   const rows = (await query.toArray()) as Array<Record<string, unknown>>;
+  const r2Base = process.env.R2_PUBLIC_BASE;
   return rows.map((row) => ({
     id: String(row.id),
     artist: String(row.artist),
     style: String(row.style),
     genre: String(row.genre),
-    thumbUrl: `/thumb/${row.id}`,
+    originalUrl: r2Base
+      ? `${r2Base}/images/original/${encodeURI(String(row.original_path))}`
+      : `/image/${row.id}`,
     score: Number(
       row._distance ?? row.score ?? row._score ?? row.distance ?? 0
     ),
