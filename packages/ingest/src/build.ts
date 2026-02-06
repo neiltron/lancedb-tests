@@ -7,6 +7,7 @@ import { Field, FixedSizeList, Float32, Int32, Schema, Utf8 } from "apache-arrow
 
 import { loadDataset } from "./datasets/index.js";
 import { createClipEmbedder, createDinoEmbedder } from "./embeddings/index.js";
+import { extractEdgesToFile } from "./utils/edges.js";
 import { batches } from "./utils/batches.js";
 import { hashId } from "./utils/hash.js";
 import { ensureDirForFile, withJpegExtension } from "./utils/paths.js";
@@ -30,6 +31,7 @@ type ManifestEntry = {
   error?: string;
   clip?: string;
   dino?: string;
+  sketch?: string;
   imagePath?: string;
 };
 
@@ -108,11 +110,14 @@ export async function buildIndex(opts: BuildOptions) {
 
   const originalsDir = path.join(imagesDir, "original");
   const thumbsDir = path.join(imagesDir, "thumb");
+  const edgesDir = path.join(imagesDir, "edges");
   await fs.ensureDir(originalsDir);
   await fs.ensureDir(thumbsDir);
+  await fs.ensureDir(edgesDir);
 
   const clip = await createClipEmbedder({ cacheDir: modelCacheDir, dtype: "q8" });
   const dino = await createDinoEmbedder({ cacheDir: modelCacheDir, dtype: "q8" });
+  const sketch = await createDinoEmbedder({ cacheDir: modelCacheDir, dtype: "q8", edges: true });
 
   const db = await lancedb.connect(dbDir);
   let table: any;
@@ -132,6 +137,12 @@ export async function buildIndex(opts: BuildOptions) {
     new Field(
       "dino_vec",
       new FixedSizeList(384, new Field("item", new Float32()))
+    ),
+    new Field("edge_path", new Utf8(), true),
+    new Field(
+      "sketch_vec",
+      new FixedSizeList(384, new Field("item", new Float32())),
+      true
     )
   ]);
 
@@ -174,12 +185,24 @@ export async function buildIndex(opts: BuildOptions) {
           const clipVec = await clip.embedImage(thumbOut);
           const dinoVec = await dino.embedImage(thumbOut);
 
+          // Extract edges and create sketch embedding
+          const edgeRelPath = withJpegExtension(relativePath);
+          const edgeOut = path.join(edgesDir, edgeRelPath);
+          let sketchVec: Float32Array | null = null;
+          try {
+            await extractEdgesToFile(thumbOut, edgeOut);
+            sketchVec = await sketch.embedImage(edgeOut);
+          } catch (error) {
+            console.warn(`Sketch embedding failed for ${id}: ${error}`);
+          }
+
           processed++;
           await appendManifest(manifestPath, {
             id,
             status: "ok",
             clip: clip.modelId,
             dino: dino.modelId,
+            sketch: sketch.modelId,
             imagePath: relativePath
           });
 
@@ -187,13 +210,15 @@ export async function buildIndex(opts: BuildOptions) {
             id,
             original_path: path.relative(originalsDir, originalOut),
             thumb_path: path.relative(thumbsDir, thumbOut),
+            edge_path: sketchVec ? edgeRelPath : null,
             artist: item.artist,
             style: item.style,
             genre: item.genre,
             title: item.title ?? null,
             year: item.year ?? null,
             clip_vec: Array.from(clipVec),
-            dino_vec: Array.from(dinoVec)
+            dino_vec: Array.from(dinoVec),
+            sketch_vec: sketchVec ? Array.from(sketchVec) : null
           };
         } catch (error) {
           await appendManifest(manifestPath, {
@@ -217,6 +242,7 @@ export async function buildIndex(opts: BuildOptions) {
 
   await table.createIndex("clip_vec", { replace: true });
   await table.createIndex("dino_vec", { replace: true });
+  await table.createIndex("sketch_vec", { replace: true });
 
   console.log("Ingest complete.");
 }

@@ -21,6 +21,22 @@ const DEFAULT_THUMB_SIZE = 256;
 const THUMB_QUALITY = 82;
 const HYBRID_POOL = 200;
 
+// Laplacian edge detection kernel
+const LAPLACIAN_KERNEL = [-1, -1, -1, -1, 8, -1, -1, -1, -1];
+
+async function extractEdges(
+  input: string | Buffer,
+  blur = 1.5,
+  threshold = 50
+): Promise<Buffer> {
+  return sharp(input)
+    .grayscale()
+    .blur(blur)
+    .convolve({ width: 3, height: 3, kernel: LAPLACIAN_KERNEL })
+    .threshold(threshold)
+    .toBuffer();
+}
+
 type Embedder = {
   modelId: string;
   embedImage: (imagePath: string) => Promise<Float32Array>;
@@ -100,6 +116,7 @@ async function ensureDirForFile(filePath: string) {
 
 let clipEmbedderPromise: Promise<Embedder> | null = null;
 let dinoEmbedderPromise: Promise<Embedder> | null = null;
+let sketchEmbedderPromise: Promise<Embedder> | null = null;
 
 async function createClipEmbedder(): Promise<Embedder> {
   configureModelCache();
@@ -174,6 +191,49 @@ async function getDinoEmbedder(): Promise<Embedder> {
   return dinoEmbedderPromise;
 }
 
+async function createSketchEmbedder(): Promise<Embedder> {
+  configureModelCache();
+  const dtype = "q8";
+  const modelId = "Xenova/dinov2-small";
+  const extractor = await hf.pipeline(
+    "image-feature-extraction",
+    modelId,
+    { dtype, subfolder: "onnx" } as any
+  );
+  return {
+    modelId: `${modelId}+edges`,
+    async embedImage(imagePath: string) {
+      // Extract edges first
+      const edgeBuffer = await extractEdges(imagePath);
+      const image = await (hf as any).RawImage.fromBlob(
+        new Blob([new Uint8Array(edgeBuffer)], { type: "image/png" })
+      );
+      const output: any = await extractor(
+        image,
+        { pooling: "mean", normalize: true } as any
+      );
+      const data = Float32Array.from(
+        (output.data as Float32Array | number[]) as Iterable<number>
+      );
+      const dims = output.dims as number[] | undefined;
+      if (dims && dims.length >= 2) {
+        const dim = dims[dims.length - 1];
+        const seq = data.length / dim;
+        if (Number.isFinite(seq) && Number.isInteger(seq) && seq > 1) {
+          const pooled = meanPoolTokens(data, seq, dim, 1);
+          return l2Normalize(pooled);
+        }
+      }
+      return l2Normalize(data);
+    },
+  };
+}
+
+async function getSketchEmbedder(): Promise<Embedder> {
+  if (!sketchEmbedderPromise) sketchEmbedderPromise = createSketchEmbedder();
+  return sketchEmbedderPromise;
+}
+
 let tablePromise: Promise<any> | null = null;
 let dbDirResolved: string | null = null;
 async function getTable() {
@@ -219,7 +279,7 @@ async function vectorSearch({
   filters,
 }: {
   vector: Float32Array;
-  column: "clip_vec" | "dino_vec";
+  column: "clip_vec" | "dino_vec" | "sketch_vec";
   k: number;
   filters?: SearchFilters;
 }) {
@@ -234,6 +294,7 @@ async function vectorSearch({
     "genre",
     "thumb_path",
     "original_path",
+    "edge_path",
     "_distance",
   ]);
   const rows = (await query.toArray()) as Array<Record<string, unknown>>;
@@ -243,6 +304,7 @@ async function vectorSearch({
     style: String(row.style),
     genre: String(row.genre),
     thumbUrl: `/thumb/${row.id}`,
+    edgeUrl: row.edge_path ? `/edge/${row.id}` : undefined,
     score: Number(
       row._distance ?? row.score ?? row._score ?? row.distance ?? 0
     ),
@@ -350,6 +412,57 @@ app.get("/image/:id", async (c) => {
   }
 });
 
+app.get("/edge/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const table = await getTable();
+    const filter = `id = '${escapeSqlString(id)}'`;
+    const rows = (await table
+      .query()
+      .where(filter)
+      .limit(1)
+      .select(["edge_path"])
+      .toArray()) as Array<Record<string, unknown>>;
+
+    if (!rows.length) return c.json({ error: "not found" }, 404);
+
+    const imagesDir = getImagesDir();
+    const edgesDir = path.join(imagesDir, "edges");
+    const edgePath = String(rows[0].edge_path || "");
+    if (!edgePath) return c.json({ error: "not found" }, 404);
+
+    const edgeFull = resolveUnder(edgesDir, edgePath);
+    if (!edgeFull) return c.json({ error: "not found" }, 404);
+
+    const buffer = await fs.readFile(edgeFull);
+    return c.body(buffer, 200, { "Content-Type": "image/jpeg" });
+  } catch (error) {
+    return c.json(
+      { error: "edge_failed", detail: error instanceof Error ? error.message : String(error) },
+      500
+    );
+  }
+});
+
+app.post("/extract-edges", async (c) => {
+  const form = await c.req.formData();
+  const file = form.get("image");
+  if (!file || typeof (file as File).arrayBuffer !== "function") {
+    return c.json({ error: "missing_image" }, 400);
+  }
+
+  try {
+    const buffer = Buffer.from(await (file as File).arrayBuffer());
+    const edgeBuffer = await extractEdges(buffer);
+    return c.body(new Uint8Array(edgeBuffer), 200, { "Content-Type": "image/jpeg" });
+  } catch (error) {
+    return c.json(
+      { error: "edge_extraction_failed", detail: error instanceof Error ? error.message : String(error) },
+      500
+    );
+  }
+});
+
 app.post("/search", async (c) => {
   const form = await c.req.formData();
   const file = form.get("image");
@@ -398,6 +511,18 @@ app.post("/search", async (c) => {
       const results = await vectorSearch({
         vector,
         column: "dino_vec",
+        k,
+        filters,
+      });
+      return c.json({ results, debug: payload });
+    }
+
+    if (mode === "sketch") {
+      const sketch = await getSketchEmbedder();
+      const vector = await sketch.embedImage(tempPath);
+      const results = await vectorSearch({
+        vector,
+        column: "sketch_vec",
         k,
         filters,
       });

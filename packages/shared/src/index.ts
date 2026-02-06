@@ -1,4 +1,4 @@
-export type SearchMode = "clip" | "dino" | "hybrid" | "compare";
+export type SearchMode = "clip" | "dino" | "sketch" | "hybrid" | "compare";
 
 export type SearchFilters = {
   artist?: string;
@@ -19,9 +19,11 @@ export type SearchResult = {
   style: string;
   genre: string;
   thumbUrl: string;
+  edgeUrl?: string;
   score: number;
   debug?: {
     clipScore?: number;
     dinoScore?: number;
+    sketchScore?: number;
   };
 };

@@ -5,7 +5,9 @@ const API_BASE = "http://localhost:8787";
 
 function ResultCard({ r }: { r: SearchResult }) {
   const [imgError, setImgError] = useState(false);
+  const [showEdge, setShowEdge] = useState(false);
   const thumbSrc = r.thumbUrl ? `${API_BASE}${r.thumbUrl}` : null;
+  const edgeSrc = r.edgeUrl ? `${API_BASE}${r.edgeUrl}` : null;
   const hasImage = thumbSrc && !imgError;
 
   return (
@@ -14,7 +16,7 @@ function ResultCard({ r }: { r: SearchResult }) {
         {hasImage ? (
           <img
             className="thumb"
-            src={thumbSrc}
+            src={showEdge && edgeSrc ? edgeSrc : thumbSrc}
             alt={`${r.artist} – ${r.style}`}
             loading="lazy"
             onError={() => setImgError(true)}
@@ -34,6 +36,14 @@ function ResultCard({ r }: { r: SearchResult }) {
           {r.style}
         </div>
         <div className="score">{r.score.toFixed(4)}</div>
+        {edgeSrc && (
+          <button
+            className="edge-toggle"
+            onClick={() => setShowEdge(!showEdge)}
+          >
+            {showEdge ? "Photo" : "Edges"}
+          </button>
+        )}
       </div>
     </article>
   );
@@ -75,8 +85,10 @@ export function App() {
 
   const [clipResults, setClipResults] = useState<SearchResult[]>([]);
   const [dinoResults, setDinoResults] = useState<SearchResult[]>([]);
+  const [sketchResults, setSketchResults] = useState<SearchResult[]>([]);
   const [hybridResults, setHybridResults] = useState<SearchResult[]>([]);
   const [singleResults, setSingleResults] = useState<SearchResult[]>([]);
+  const [queryEdgeUrl, setQueryEdgeUrl] = useState<string | null>(null);
 
   const preview = useMemo(() => {
     if (!file) return null;
@@ -102,7 +114,7 @@ export function App() {
   };
 
   const fetchResults = async (
-    searchMode: "clip" | "dino" | "hybrid",
+    searchMode: "clip" | "dino" | "sketch" | "hybrid",
     k = 30,
   ): Promise<SearchResult[]> => {
     const form = new FormData();
@@ -119,18 +131,38 @@ export function App() {
     return data.results || [];
   };
 
+  const fetchQueryEdge = async () => {
+    if (!file) return;
+    const form = new FormData();
+    form.append("image", file);
+    const res = await fetch(`${API_BASE}/extract-edges`, {
+      method: "POST",
+      body: form,
+    });
+    const blob = await res.blob();
+    if (queryEdgeUrl) URL.revokeObjectURL(queryEdgeUrl);
+    setQueryEdgeUrl(URL.createObjectURL(blob));
+  };
+
   const onSearch = async () => {
     if (!file) return;
     setLoading(true);
 
     try {
+      // Fetch query edge preview for sketch-related modes
+      if (mode === "compare" || mode === "sketch") {
+        fetchQueryEdge();
+      }
+
       if (mode === "compare") {
-        const [clip, dino] = await Promise.all([
+        const [clip, dino, sketch] = await Promise.all([
           fetchResults("clip"),
           fetchResults("dino"),
+          fetchResults("sketch"),
         ]);
         setClipResults(clip);
         setDinoResults(dino);
+        setSketchResults(sketch);
       } else if (mode === "hybrid") {
         const results = await fetchResults("hybrid");
         setHybridResults(results);
@@ -143,6 +175,7 @@ export function App() {
       if (mode === "compare") {
         setClipResults([]);
         setDinoResults([]);
+        setSketchResults([]);
       } else if (mode === "hybrid") {
         setHybridResults([]);
       } else {
@@ -155,7 +188,7 @@ export function App() {
 
   const hasSearched =
     mode === "compare"
-      ? clipResults.length > 0 || dinoResults.length > 0
+      ? clipResults.length > 0 || dinoResults.length > 0 || sketchResults.length > 0
       : mode === "hybrid"
         ? hybridResults.length > 0
         : singleResults.length > 0;
@@ -186,10 +219,13 @@ export function App() {
             <span>or click to choose</span>
           </div>
           {preview && <img className="preview" src={preview} alt="query" />}
+          {queryEdgeUrl && (
+            <img className="preview edge-preview" src={queryEdgeUrl} alt="query edges" />
+          )}
         </div>
 
         <div className="mode">
-          {(["compare", "clip", "dino", "hybrid"] as const).map((m) => (
+          {(["compare", "clip", "dino", "sketch", "hybrid"] as const).map((m) => (
             <label key={m}>
               <input
                 type="radio"
@@ -202,7 +238,9 @@ export function App() {
                   ? "CLIP"
                   : m === "dino"
                     ? "DINO"
-                    : "Hybrid"}
+                    : m === "sketch"
+                      ? "Sketch"
+                      : "Hybrid"}
             </label>
           ))}
         </div>
@@ -230,6 +268,7 @@ export function App() {
         <section className="compare-view">
           <ResultColumn label="CLIP" results={clipResults} loading={loading} />
           <ResultColumn label="DINO" results={dinoResults} loading={loading} />
+          <ResultColumn label="Sketch" results={sketchResults} loading={loading} />
         </section>
       ) : (
         <section className="results">
@@ -247,6 +286,9 @@ export function App() {
               )}
               {mode === "dino" && (
                 <h3 className="column-header full-width">DINO</h3>
+              )}
+              {mode === "sketch" && (
+                <h3 className="column-header full-width">Sketch</h3>
               )}
               {currentResults.map((r) => (
                 <ResultCard key={r.id} r={r} />
