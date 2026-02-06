@@ -210,8 +210,12 @@ export async function buildIndex(opts: BuildOptions) {
 
     const rows = (await Promise.all(tasks)).filter(Boolean) as Record<string, unknown>[];
     if (rows.length) {
-      await table.add(rows);
-      console.log(`Added batch: ${rows.length}, total processed: ${processed}`);
+      await table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute(rows);
+      console.log(`Upserted batch: ${rows.length}, total processed: ${processed}`);
     }
   }
 
