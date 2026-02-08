@@ -21,19 +21,122 @@ const DEFAULT_THUMB_SIZE = 256;
 const THUMB_QUALITY = 82;
 const HYBRID_POOL = 200;
 
-// Laplacian edge detection kernel
-const LAPLACIAN_KERNEL = [-1, -1, -1, -1, 8, -1, -1, -1, -1];
+// Path to skeletonize binary
+const SKELETONIZE_PATH = "/tmp/skeletonize/target/release/examples/skeletonize";
 
+type EdgeMethod = "sobel" | "skeleton";
+
+/**
+ * Extract edges using the specified method.
+ * - sobel: Gradient-based edge detection (thicker lines)
+ * - skeleton: Sobel + Zhang-Suen thinning (thin lines)
+ */
 async function extractEdges(
   input: string | Buffer,
-  blur = 1.5,
-  threshold = 50
+  method: EdgeMethod = "sobel",
+  blur = 2,
+  threshold = 0.35
 ): Promise<Buffer> {
-  return sharp(input)
+  // Check if skeletonize exists
+  const hasSkeletonize = fsSync.existsSync(SKELETONIZE_PATH);
+
+  if (method === "skeleton" && hasSkeletonize) {
+    return extractEdgesWithSkeletonize(input, blur, threshold, true);
+  }
+
+  if (method === "sobel" && hasSkeletonize) {
+    return extractEdgesWithSkeletonize(input, blur, threshold, false);
+  }
+
+  // Fallback to manual Sobel for both methods if skeletonize not available
+  return extractEdgesFallback(input, blur, threshold);
+}
+
+async function extractEdgesWithSkeletonize(
+  input: string | Buffer,
+  blur: number,
+  threshold: number,
+  thin: boolean = true
+): Promise<Buffer> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+
+  // Create temp directory for processing
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "edges-"));
+  const inputPng = path.join(tempDir, "input.png");
+  const outputPng = path.join(tempDir, "output.png");
+
+  try {
+    // Pre-blur and convert to PNG
+    await sharp(input)
+      .blur(blur)
+      .png()
+      .toFile(inputPng);
+
+    // Run skeletonize
+    const args = [
+      "-i", inputPng,
+      "-o", outputPng,
+      "-e", "sobel",
+      "-t", String(threshold),
+      "-f", "white",
+    ];
+    if (!thin) {
+      args.push("--no-thin");
+    }
+    await execFileAsync(SKELETONIZE_PATH, args);
+
+    // Read result and convert to JPEG
+    return sharp(outputPng)
+      .jpeg({ quality: 90 })
+      .toBuffer();
+  } finally {
+    // Cleanup temp files
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Fallback Sobel implementation
+const SOBEL_X = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+const SOBEL_Y = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+
+async function extractEdgesFallback(
+  input: string | Buffer,
+  blur: number,
+  threshold: number
+): Promise<Buffer> {
+  // Convert threshold from 0-1 to 0-255 range
+  const thresh = Math.round(threshold * 255);
+
+  const base = await sharp(input)
     .grayscale()
     .blur(blur)
-    .convolve({ width: 3, height: 3, kernel: LAPLACIAN_KERNEL })
-    .threshold(threshold)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { data, info } = base;
+  const { width, height } = info;
+
+  const edges = Buffer.alloc(width * height);
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      let gx = 0, gy = 0;
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const pixel = data[(y + ky) * width + (x + kx)];
+          const ki = (ky + 1) * 3 + (kx + 1);
+          gx += pixel * SOBEL_X[ki];
+          gy += pixel * SOBEL_Y[ki];
+        }
+      }
+      const magnitude = Math.min(255, Math.sqrt(gx * gx + gy * gy));
+      edges[y * width + x] = magnitude > thresh ? 255 : 0;
+    }
+  }
+
+  return sharp(edges, { raw: { width, height, channels: 1 } })
+    .jpeg({ quality: 90 })
     .toBuffer();
 }
 
@@ -116,7 +219,8 @@ async function ensureDirForFile(filePath: string) {
 
 let clipEmbedderPromise: Promise<Embedder> | null = null;
 let dinoEmbedderPromise: Promise<Embedder> | null = null;
-let sketchEmbedderPromise: Promise<Embedder> | null = null;
+let sketchSobelEmbedderPromise: Promise<Embedder> | null = null;
+let sketchSkeletonEmbedderPromise: Promise<Embedder> | null = null;
 
 async function createClipEmbedder(): Promise<Embedder> {
   configureModelCache();
@@ -191,7 +295,7 @@ async function getDinoEmbedder(): Promise<Embedder> {
   return dinoEmbedderPromise;
 }
 
-async function createSketchEmbedder(): Promise<Embedder> {
+async function createSketchEmbedder(method: EdgeMethod): Promise<Embedder> {
   configureModelCache();
   const dtype = "q8";
   const modelId = "Xenova/dinov2-small";
@@ -201,10 +305,13 @@ async function createSketchEmbedder(): Promise<Embedder> {
     { dtype, subfolder: "onnx" } as any
   );
   return {
-    modelId: `${modelId}+edges`,
+    modelId: `${modelId}+edges-${method}`,
     async embedImage(imagePath: string) {
-      // Extract edges first
-      const edgeBuffer = await extractEdges(imagePath);
+      // Resize to thumbnail size first (matching ingest), then extract edges
+      const resizedBuffer = await sharp(imagePath)
+        .resize(256, 256, { fit: "inside" })
+        .toBuffer();
+      const edgeBuffer = await extractEdges(resizedBuffer, method);
       const image = await (hf as any).RawImage.fromBlob(
         new Blob([new Uint8Array(edgeBuffer)], { type: "image/png" })
       );
@@ -229,9 +336,14 @@ async function createSketchEmbedder(): Promise<Embedder> {
   };
 }
 
-async function getSketchEmbedder(): Promise<Embedder> {
-  if (!sketchEmbedderPromise) sketchEmbedderPromise = createSketchEmbedder();
-  return sketchEmbedderPromise;
+async function getSketchSobelEmbedder(): Promise<Embedder> {
+  if (!sketchSobelEmbedderPromise) sketchSobelEmbedderPromise = createSketchEmbedder("sobel");
+  return sketchSobelEmbedderPromise;
+}
+
+async function getSketchSkeletonEmbedder(): Promise<Embedder> {
+  if (!sketchSkeletonEmbedderPromise) sketchSkeletonEmbedderPromise = createSketchEmbedder("skeleton");
+  return sketchSkeletonEmbedderPromise;
 }
 
 let tablePromise: Promise<any> | null = null;
@@ -279,7 +391,7 @@ async function vectorSearch({
   filters,
 }: {
   vector: Float32Array;
-  column: "clip_vec" | "dino_vec" | "sketch_vec";
+  column: "clip_vec" | "dino_vec" | "sketch_sobel_vec" | "sketch_skeleton_vec";
   k: number;
   filters?: SearchFilters;
 }) {
@@ -294,7 +406,8 @@ async function vectorSearch({
     "genre",
     "thumb_path",
     "original_path",
-    "edge_path",
+    "edge_sobel_path",
+    "edge_skeleton_path",
     "_distance",
   ]);
   const rows = (await query.toArray()) as Array<Record<string, unknown>>;
@@ -303,8 +416,10 @@ async function vectorSearch({
     artist: String(row.artist),
     style: String(row.style),
     genre: String(row.genre),
-    thumbUrl: `/thumb/${row.id}`,
-    edgeUrl: row.edge_path ? `/edge/${row.id}` : undefined,
+    // Return direct paths for Vite to serve
+    thumbUrl: `/images/original/${row.original_path || ""}`,
+    edgeSobelUrl: row.edge_sobel_path ? `/images/edges-sobel/${row.edge_sobel_path}` : undefined,
+    edgeSkeletonUrl: row.edge_skeleton_path ? `/images/edges-skeleton/${row.edge_skeleton_path}` : undefined,
     score: Number(
       row._distance ?? row.score ?? row._score ?? row.distance ?? 0
     ),
@@ -453,7 +568,11 @@ app.post("/extract-edges", async (c) => {
 
   try {
     const buffer = Buffer.from(await (file as File).arrayBuffer());
-    const edgeBuffer = await extractEdges(buffer);
+    // Resize to thumbnail size first (matching ingest/sketch search)
+    const resizedBuffer = await sharp(buffer)
+      .resize(256, 256, { fit: "inside" })
+      .toBuffer();
+    const edgeBuffer = await extractEdges(resizedBuffer);
     return c.body(new Uint8Array(edgeBuffer), 200, { "Content-Type": "image/jpeg" });
   } catch (error) {
     return c.json(
@@ -517,12 +636,24 @@ app.post("/search", async (c) => {
       return c.json({ results, debug: payload });
     }
 
-    if (mode === "sketch") {
-      const sketch = await getSketchEmbedder();
+    if (mode === "sketch-sobel") {
+      const sketch = await getSketchSobelEmbedder();
       const vector = await sketch.embedImage(tempPath);
       const results = await vectorSearch({
         vector,
-        column: "sketch_vec",
+        column: "sketch_sobel_vec",
+        k,
+        filters,
+      });
+      return c.json({ results, debug: payload });
+    }
+
+    if (mode === "sketch-skeleton") {
+      const sketch = await getSketchSkeletonEmbedder();
+      const vector = await sketch.embedImage(tempPath);
+      const results = await vectorSearch({
+        vector,
+        column: "sketch_skeleton_vec",
         k,
         filters,
       });
