@@ -1,4 +1,4 @@
-export type SearchMode = "clip" | "dino" | "hybrid" | "compare";
+export type SearchMode = "clip" | "dino" | "sketch-sobel" | "sketch-skeleton" | "hybrid" | "compare";
 
 export type SearchFilters = {
   artist?: string;
@@ -19,9 +19,14 @@ export type SearchResult = {
   style: string;
   genre: string;
   thumbUrl: string;
+  edgeUrl?: string;
   score: number;
+  edgeSobelUrl?: string;
+  edgeSkeletonUrl?: string;
   debug?: {
     clipScore?: number;
     dinoScore?: number;
+    sketchSobelScore?: number;
+    sketchSkeletonScore?: number;
   };
 };

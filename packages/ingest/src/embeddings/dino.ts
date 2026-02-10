@@ -1,9 +1,14 @@
 import * as hf from "@huggingface/transformers";
 import { l2Normalize } from "../utils/normalize.js";
+import { extractEdges } from "../utils/edges.js";
 import type { Embedder, EmbeddingOptions } from "./types.js";
 
+export type DinoEmbedderOptions = EmbeddingOptions & {
+  edges?: boolean; // If true, preprocess with edge extraction
+};
+
 export async function createDinoEmbedder(
-  options: EmbeddingOptions = {},
+  options: DinoEmbedderOptions = {},
 ): Promise<Embedder> {
   if (options.cacheDir && (hf as any).env) (hf as any).env.cacheDir = options.cacheDir;
   const dtype = options.dtype || "q8";
@@ -16,9 +21,19 @@ export async function createDinoEmbedder(
     (async (path: string) => (hf as any).RawImage.fromFile(path));
 
   return {
-    modelId,
+    modelId: options.edges ? `${modelId}+edges` : modelId,
     async embedImage(imagePath) {
-      const image = await loadImage(imagePath);
+      // Preprocess with edge extraction if enabled
+      let image;
+      if (options.edges) {
+        const edgeBuffer = await extractEdges(imagePath);
+        image = await (hf as any).RawImage.fromBlob(
+          new Blob([new Uint8Array(edgeBuffer)], { type: "image/png" })
+        );
+      } else {
+        image = await loadImage(imagePath);
+      }
+
       const output: any = await extractor(image, {
         pooling: "mean",
         normalize: true,

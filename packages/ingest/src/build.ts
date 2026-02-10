@@ -7,6 +7,7 @@ import { Field, FixedSizeList, Float32, Int32, Schema, Utf8 } from "apache-arrow
 
 import { loadDataset } from "./datasets/index.js";
 import { createClipEmbedder, createDinoEmbedder } from "./embeddings/index.js";
+import { extractEdgesToFile, type EdgeMethod } from "./utils/edges.js";
 import { batches } from "./utils/batches.js";
 import { hashId } from "./utils/hash.js";
 import { ensureDirForFile, withJpegExtension } from "./utils/paths.js";
@@ -30,6 +31,7 @@ type ManifestEntry = {
   error?: string;
   clip?: string;
   dino?: string;
+  sketch?: string;
   imagePath?: string;
 };
 
@@ -108,11 +110,17 @@ export async function buildIndex(opts: BuildOptions) {
 
   const originalsDir = path.join(imagesDir, "original");
   const thumbsDir = path.join(imagesDir, "thumb");
+  const edgesSobelDir = path.join(imagesDir, "edges-sobel");
+  const edgesSkeletonDir = path.join(imagesDir, "edges-skeleton");
   await fs.ensureDir(originalsDir);
   await fs.ensureDir(thumbsDir);
+  await fs.ensureDir(edgesSobelDir);
+  await fs.ensureDir(edgesSkeletonDir);
 
   const clip = await createClipEmbedder({ cacheDir: modelCacheDir, dtype: "q8" });
   const dino = await createDinoEmbedder({ cacheDir: modelCacheDir, dtype: "q8" });
+  // Two sketch embedders - same model but will embed different edge images
+  const sketchEmbedder = await createDinoEmbedder({ cacheDir: modelCacheDir, dtype: "q8", edges: false });
 
   const db = await lancedb.connect(dbDir);
   let table: any;
@@ -132,6 +140,18 @@ export async function buildIndex(opts: BuildOptions) {
     new Field(
       "dino_vec",
       new FixedSizeList(384, new Field("item", new Float32()))
+    ),
+    new Field("edge_sobel_path", new Utf8(), true),
+    new Field("edge_skeleton_path", new Utf8(), true),
+    new Field(
+      "sketch_sobel_vec",
+      new FixedSizeList(384, new Field("item", new Float32())),
+      true
+    ),
+    new Field(
+      "sketch_skeleton_vec",
+      new FixedSizeList(384, new Field("item", new Float32())),
+      true
     )
   ]);
 
@@ -174,12 +194,37 @@ export async function buildIndex(opts: BuildOptions) {
           const clipVec = await clip.embedImage(thumbOut);
           const dinoVec = await dino.embedImage(thumbOut);
 
+          // Extract edges with both methods and create sketch embeddings
+          const edgeRelPath = withJpegExtension(relativePath);
+          const edgeSobelOut = path.join(edgesSobelDir, edgeRelPath);
+          const edgeSkeletonOut = path.join(edgesSkeletonDir, edgeRelPath);
+
+          let sketchSobelVec: Float32Array | null = null;
+          let sketchSkeletonVec: Float32Array | null = null;
+
+          // Sobel edges
+          try {
+            await extractEdgesToFile(thumbOut, edgeSobelOut, { method: "sobel" });
+            sketchSobelVec = await sketchEmbedder.embedImage(edgeSobelOut);
+          } catch (error) {
+            console.warn(`Sobel sketch embedding failed for ${id}: ${error}`);
+          }
+
+          // Skeleton edges
+          try {
+            await extractEdgesToFile(thumbOut, edgeSkeletonOut, { method: "skeleton" });
+            sketchSkeletonVec = await sketchEmbedder.embedImage(edgeSkeletonOut);
+          } catch (error) {
+            console.warn(`Skeleton sketch embedding failed for ${id}: ${error}`);
+          }
+
           processed++;
           await appendManifest(manifestPath, {
             id,
             status: "ok",
             clip: clip.modelId,
             dino: dino.modelId,
+            sketch: sketchEmbedder.modelId,
             imagePath: relativePath
           });
 
@@ -187,13 +232,17 @@ export async function buildIndex(opts: BuildOptions) {
             id,
             original_path: path.relative(originalsDir, originalOut),
             thumb_path: path.relative(thumbsDir, thumbOut),
+            edge_sobel_path: sketchSobelVec ? edgeRelPath : null,
+            edge_skeleton_path: sketchSkeletonVec ? edgeRelPath : null,
             artist: item.artist,
             style: item.style,
             genre: item.genre,
             title: item.title ?? null,
             year: item.year ?? null,
             clip_vec: Array.from(clipVec),
-            dino_vec: Array.from(dinoVec)
+            dino_vec: Array.from(dinoVec),
+            sketch_sobel_vec: sketchSobelVec ? Array.from(sketchSobelVec) : null,
+            sketch_skeleton_vec: sketchSkeletonVec ? Array.from(sketchSkeletonVec) : null
           };
         } catch (error) {
           await appendManifest(manifestPath, {
@@ -217,6 +266,8 @@ export async function buildIndex(opts: BuildOptions) {
 
   await table.createIndex("clip_vec", { replace: true });
   await table.createIndex("dino_vec", { replace: true });
+  await table.createIndex("sketch_sobel_vec", { replace: true });
+  await table.createIndex("sketch_skeleton_vec", { replace: true });
 
   console.log("Ingest complete.");
 }
